@@ -185,6 +185,17 @@ func UpdateFood() gin.HandlerFunc {
 			return
 		}
 
+		var updatedFood models.Food
+		if result.MatchedCount == 1 {
+			err := foodCollection.FindOne(ctx, filter).Decode(&updatedFood)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch updated food"})
+				return
+			}
+			c.JSON(http.StatusOK, updatedFood)
+			return
+		}
+
 		c.JSON(http.StatusOK, result)
 	}
 }
