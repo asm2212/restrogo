@@ -4,20 +4,25 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
+	"golang-restrogo/database"
+	"golang-restrogo/models"
+
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"golang-restrogo/models"
 )
 
 var menuCollection *mongo.Collection = database.OpenCollection(database.Client, "menu")
+var validate = validator.New()
 
 func GetMenus() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 		defer cancel()
 
 		// Add pagination parameters
@@ -34,19 +39,25 @@ func GetMenus() gin.HandlerFunc {
 		startIndex := (page - 1) * recordPerPage
 
 		// MongoDB query with pagination
-		matchStage := bson.D{{"$match", bson.D{{}}}}
-		groupStage := bson.D{{"$group", bson.D{
-			{"_id", nil},
-			{"total_count", bson.D{{"$sum", 1}}},
-			{"data", bson.D{{"$push", "$$ROOT"}}},
-		}}}
-		projectStage := bson.D{{"$project", bson.D{
-			{"_id", 0},
-			{"total_count", 1},
-			{"menu_items", bson.D{{"$slice", []interface{}{"$data", startIndex, recordPerPage}}}},
-		}}}
+		matchStage := bson.D{{Key: "$match", Value: bson.D{}}}
+		groupStage := bson.D{
+			{Key: "$group", Value: bson.D{
+				{Key: "_id", Value: nil},
+				{Key: "total_count", Value: bson.D{{Key: "$sum", Value: 1}}},
+				{Key: "data", Value: bson.D{{Key: "$push", Value: "$$ROOT"}}},
+			}},
+		}
+		projectStage := bson.D{
+			{Key: "$project", Value: bson.D{
+				{Key: "_id", Value: 0},
+				{Key: "total_count", Value: 1},
+				{Key: "menu_items", Value: bson.D{
+					{Key: "$slice", Value: []interface{}{"$data", startIndex, recordPerPage}},
+				}},
+			}},
+		}
 
-		result, err := menuCollection.Aggregate(ctx, mongo.Pipeline{
+		cursor, err := menuCollection.Aggregate(ctx, mongo.Pipeline{
 			matchStage, groupStage, projectStage,
 		})
 		if err != nil {
@@ -55,7 +66,7 @@ func GetMenus() gin.HandlerFunc {
 		}
 
 		var allMenus []bson.M
-		if err = result.All(ctx, &allMenus); err != nil {
+		if err = cursor.All(ctx, &allMenus); err != nil {
 			log.Println(err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -72,15 +83,15 @@ func GetMenus() gin.HandlerFunc {
 
 func GetMenu() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 		defer cancel()
 
 		menuId := c.Param("menu_id")
 		var menu models.Menu
 
-		objId, _ := primitive.ObjectIDFromHex(menuId)
-
-		err := menuCollection.FindOne(ctx, bson.M{"_id": objId}).Decode(&menu)
+		// menuId in the database is likely stored as a string (menu_id field), not ObjectId.
+		// We will search by menu_id (string hex) instead of _id (ObjectId).
+		err := menuCollection.FindOne(ctx, bson.M{"menu_id": menuId}).Decode(&menu)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "error occurred while fetching the menu",
@@ -93,7 +104,7 @@ func GetMenu() gin.HandlerFunc {
 
 func CreateMenu() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 		defer cancel()
 
 		var menu models.Menu
@@ -109,7 +120,8 @@ func CreateMenu() gin.HandlerFunc {
 			return
 		}
 
-		menu.Created_at, _ = time.Parse(time.RFC3339, time.Now().Format(time.RFC3339))
+		now := time.Now()
+		menu.Created_at = &now
 		menu.Updated_at = menu.Created_at
 		menu.ID = primitive.NewObjectID()
 		menu.Menu_id = menu.ID.Hex()
@@ -126,7 +138,7 @@ func CreateMenu() gin.HandlerFunc {
 
 func UpdateMenu() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 		defer cancel()
 
 		menuId := c.Param("menu_id")
@@ -137,27 +149,28 @@ func UpdateMenu() gin.HandlerFunc {
 			return
 		}
 
-		var updateObj primitive.D
+		var updateObj bson.D
 
 		if menu.Name != "" {
-			updateObj = append(updateObj, bson.E{"name", menu.Name})
+			updateObj = append(updateObj, bson.E{Key: "name", Value: menu.Name})
 		}
 		if menu.Category != "" {
-			updateObj = append(updateObj, bson.E{"category", menu.Category})
+			updateObj = append(updateObj, bson.E{Key: "category", Value: menu.Category})
 		}
 		if menu.Start_Date != nil {
-			updateObj = append(updateObj, bson.E{"start_date", menu.Start_Date})
+			updateObj = append(updateObj, bson.E{Key: "start_date", Value: menu.Start_Date})
 		}
 		if menu.End_Date != nil {
-			updateObj = append(updateObj, bson.E{"end_date", menu.End_Date})
+			updateObj = append(updateObj, bson.E{Key: "end_date", Value: menu.End_Date})
 		}
 
-		menu.Updated_at, _ = time.Parse(time.RFC3339, time.Now().Format(time.RFC3339))
-		updateObj = append(updateObj, bson.E{"updated_at", menu.Updated_at})
+		now := time.Now()
+		menu.Updated_at = &now
+		updateObj = append(updateObj, bson.E{Key: "updated_at", Value: menu.Updated_at})
 
-		objId, _ := primitive.ObjectIDFromHex(menuId)
-		filter := bson.M{"_id": objId}
-		update := bson.D{{"$set", updateObj}}
+		// Query by menu_id string field, NOT _id (ObjectId)
+		filter := bson.M{"menu_id": menuId}
+		update := bson.D{{Key: "$set", Value: updateObj}}
 
 		result, err := menuCollection.UpdateOne(ctx, filter, update)
 		if err != nil {
@@ -165,7 +178,7 @@ func UpdateMenu() gin.HandlerFunc {
 			return
 		}
 
-		// Return the updated document
+		// Return the updated document only if matched
 		var updatedMenu models.Menu
 		if result.MatchedCount == 1 {
 			err := menuCollection.FindOne(ctx, filter).Decode(&updatedMenu)
