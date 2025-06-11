@@ -65,6 +65,7 @@ func CreateOrder() gin.HandlerFunc {
 		defer cancel()
 
 		var order models.Order
+		var table models.Table
 
 		if err := c.BindJSON(&order); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -76,17 +77,16 @@ func CreateOrder() gin.HandlerFunc {
 			return
 		}
 
-		// Validate items and calculate total
-		var totalPrice float64
-		for _, foodID := range order.Items {
-			var food models.Food
-			err := foodCollection.FindOne(ctx, bson.M{"food_id": foodID}).Decode(&food)
-			if err != nil {
-				msg := fmt.Sprintf("food item %s not found", foodID)
-				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+	    if order.Table_id!= nil {
+			err := tableCollection.FindOne(ctx,bson.M{
+				"table_id" : order.Table_id
+			}).Decode(&table)
+			defer cancel()
+			if err!=nil{
+				msg:=fmt.Sprintf("message:Table was not found")
+				c.JSON(http.StatusInternalServerError,gin.H{"error":msg})
 				return
 			}
-			totalPrice += *food.Price
 		}
 
 		now := time.Now()
@@ -162,4 +162,18 @@ func UpdateOrder() gin.HandlerFunc {
 
 		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 	}
+}
+
+
+func OrderItemOrderCreator(order models.Order) string {
+	order.Created_at,_ = time.Parse(time.RFC3339,time.Now().Format(time.RFC3339))
+	order.UPdated_at,_ = time.Parse(time.RFC3339,time.Now().Format(time.RFC3339))
+
+	order.ID = primitive.NewObjectID()
+	order.Order_id = order.ID.Hex()
+
+	orderCollection.InsertOne(ctx,order)
+	defer cancel
+
+	return order.Order_id
 }
